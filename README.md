@@ -1,5 +1,7 @@
 # 🚁 Autonomous AI Hovercraft — v5.5
 
+> **Self-correcting autonomous hovercraft** — if someone pushes it, tilts it, or the wind moves it off course, the craft detects the drift and steers itself back to its locked heading automatically. No input from the remote required.
+
 **Platform:** Raspberry Pi Pico (RP2040) · MicroPython  
 **Chassis:** 22 cm × 14.5 cm · ~400 g  
 **Motors:** 2× Emax 1700KV BLDC · 9.2 cm 2-Blade Props  
@@ -14,29 +16,44 @@
 ```
 hover_craft/
 │
-├── main.py                          # Dual-core entry point (RP2040)
-├── hover_control.py                 # PWM, heading memory, safety logic
-├── mlp_logic.py                     # TinyML inference engine (100 Hz)
-├── weights.py                       # MLP weight storage (int8 quantized)
+├── firmware/                        # All source code
+│   ├── pico/                        # Raspberry Pi Pico (MicroPython)
+│   │   ├── main.py                  # Dual-core entry point
+│   │   ├── hover_control.py         # PWM, heading memory, safety
+│   │   ├── mlp_logic.py             # TinyML inference engine (100 Hz)
+│   │   └── weights.py               # MLP weights (int8 quantized)
+│   │
+│   ├── transmitter_nano/            # Arduino Nano — Hand Controller TX
+│   │   └── transmitter_nano.ino     # 433 MHz TX, 6-byte packet
+│   │
+│   ├── receiver_nano/               # Arduino Nano — RX UART Bridge
+│   │   └── receiver_nano.ino        # 433 MHz RX → Pico UART bridge
+│   │
+│   └── esp32_vision/                # ESP32-CAM — Vision + Ultrasonic
+│       └── sketch_apr6a/
+│           └── sketch_apr6a.ino     # Geometry + HC-SR04 streamer
 │
-├── transmitter_nano/
-│   └── transmitter_nano.ino         # Arduino Nano — 433 MHz TX controller
+├── 3d_designs/                      # 3D printable STL files (full chassis)
+│   ├── 1-upper-hull-main-body.stl   # Main upper hull body
+│   ├── 2-lower-hull.stl             # Lower hull base plate
+│   ├── 3-thrust-motor-mount.stl     # Thrust BLDC motor bracket
+│   ├── 4-roll-hoop.stl              # Roll protection hoop
+│   ├── 5-lower-skirt-mount.stl      # Lower skirt attachment ring
+│   ├── 6-upper-skirt-mount-complete.stl  # Upper skirt clamp assembly
+│   ├── propeller.stl                # Prop guard / duct
+│   ├── camerabox.stl                # ESP32-CAM enclosure
+│   ├── joystick.stl                 # Handheld controller shell
+│   └── joycover.stl                 # Controller top cover
 │
-├── receiver_nano.ino                # Arduino Nano — 433 MHz RX → UART bridge
-│
-├── esp32_vision/
-│   └── sketch_apr6a/
-│       └── sketch_apr6a.ino         # ESP32-CAM — obstacle + ultrasonic streamer
-│
-├── simulation/
-│   ├── hovercraft.urdf              # Robot description for ROS2/Gazebo
-│   ├── hover_sim.launch.py          # ROS2 simulation launch file
+├── simulation/                      # ROS2 / Gazebo SITL
+│   ├── hovercraft.urdf              # Robot description
+│   ├── hover_sim.launch.py          # ROS2 launch file
 │   ├── sitl_bridge.py               # Software-in-the-loop bridge
 │   └── world/
-│       └── hover_lab.world          # Gazebo simulation world
+│       └── hover_lab.world          # Gazebo world
 │
 ├── circuit_diagrams.md              # Full wiring diagrams (Mermaid)
-├── Connection_Map.txt               # Detailed pin-by-pin connection map
+├── Connection_Map.txt               # Pin-by-pin connection map
 ├── README.md                        # This file
 └── .gitignore
 ```
@@ -229,21 +246,22 @@ Pico unpack: `struct.unpack('<BbBBBB', frame[2:])`
 ### 1. Flash the Pico
 
 ```bash
-mpremote cp weights.py mlp_logic.py hover_control.py main.py :
+cd firmware/pico
+mpremote cp main.py hover_control.py mlp_logic.py weights.py :
 ```
 
 ### 2. Flash TX Arduino Nano
 
-Open `transmitter_nano/transmitter_nano.ino` in Arduino IDE → select **Arduino Nano** → Upload.
+Open `firmware/transmitter_nano/transmitter_nano.ino` in Arduino IDE → select **Arduino Nano** → Upload.
 
 ### 3. Flash RX Arduino Nano (Bridge)
 
-Open `receiver_nano.ino` in Arduino IDE → select **Arduino Nano** → Upload.  
+Open `firmware/receiver_nano/receiver_nano.ino` in Arduino IDE → select **Arduino Nano** → Upload.  
 Verify Serial Monitor shows: `[OK] RadioHead ready on D12`
 
 ### 4. Flash ESP32-CAM
 
-Open `esp32_vision/sketch_apr6a/sketch_apr6a.ino` in Arduino IDE → select **AI Thinker ESP32-CAM** → Upload.
+Open `firmware/esp32_vision/sketch_apr6a/sketch_apr6a.ino` in Arduino IDE → select **AI Thinker ESP32-CAM** → Upload.
 
 ### 5. Bench Test (NO PROPELLERS)
 
@@ -279,14 +297,52 @@ Pico Serial (Thonny) should show:
 
 ## 🔬 AI Autonomous Mode
 
-When **AI Mode** is toggled ON (D2 switch on transmitter):
+When **AI Mode** is toggled ON (D2 switch on transmitter), the craft becomes self-correcting:
 
-1. **Heading Memory** — Gyro-Z integrated into heading error (degrees). Fixed 250 µs rudder correction applied when drift exceeds 20°. Auto-disengages at zero-crossing with 300 ms cooldown.
-2. **Tilt Correction** — MLP roll-tilt → servo trim (up to ±312 µs).
-3. **Human Detection** — ESP32-CAM bounding box aspect + height → `STATE_BRAKING` (latched, requires joystick reset).
-4. **Proximity Stop** — Ultrasonic < 22 cm + camera confirmation → forward thrust blocked, steering preserved for evasion.
-5. **Torque Offset** — Proportional rudder bias to cancel lift motor torque reaction.
-6. **AI Debounce** — 5 consecutive `ai_mode=True` packets required (50 ms) before AI activates — protects against corrupt RF packets.
+### 🔄 Self-Correction — The Key Feature
+
+> **If the craft is pushed, bumped, tilted, or drifts off course by wind or surface irregularity — it corrects itself back to its original heading without any input from the remote.**
+
+This works through a two-layer system running at 100Hz:
+
+- **Heading Memory (Angle Integration):** The gyroscope's yaw rate is continuously integrated into a heading error value (in degrees). If the craft rotates away from its locked heading — whether from a bump, wind, or uneven surface — the error accumulates. Once it crosses 20°, the rudder servo fires a fixed 250 µs correction force to push it back.
+- **Zero-Crossing Disengage:** When the craft returns to its locked heading, the correction immediately disengages and a 300 ms cooldown prevents the return momentum from triggering an over-correction in the opposite direction.
+- **Tilt Correction (MLP):** The TinyML neural network reads the accelerometer and fires servo trim corrections (up to ±312 µs) to counteract roll tilt in real time.
+- **Pilot Overrule:** If you move the joystick, heading memory clears instantly. On release, the craft re-locks to its new position as the fresh zero.
+
+### Full Feature List
+
+1. **Autonomous Heading Hold** — Locks heading at AI-on moment; corrects any external disturbance back to it
+2. **Tilt-Rudder Correction** — MLP roll compensation via servo trim at 100 Hz
+3. **Human Detection** — ESP32-CAM bounding box geometry → `STATE_BRAKING` (latched, joystick reset to exit)
+4. **Ultrasonic Proximity Stop** — Fused with camera: forward thrust blocked within 22 cm, steering preserved for evasion
+5. **Torque Offset Compensation** — Proportional rudder bias cancels lift motor rotational torque
+6. **Gyro Debounce (Sustained-Spin Gate)** — 5 consecutive ticks above deadband required before integrating — filters vibration spikes
+7. **AI Packet Debounce** — 5 consecutive `ai_mode=True` RF packets required before AI activates — prevents corrupt-packet false triggers
+8. **Pilot Overrule + Heading Re-lock** — Pilot steering clears heading memory; heading re-locks on stick release
+
+---
+
+---
+
+## 🖨️ 3D Design Files
+
+All structural parts are fully 3D printable. Files are in the `3d_designs/` folder (STL format, ready to slice).
+
+| File | Part | Notes |
+|------|------|-------|
+| `1-upper-hull-main-body.stl` | Upper hull | Main body — houses Pico, Nano, IMU |
+| `2-lower-hull.stl` | Lower hull | Base plate — mounts ESCs and LiPo |
+| `3-thrust-motor-mount.stl` | Thrust motor bracket | Rear BLDC mount with servo clearance |
+| `4-roll-hoop.stl` | Roll hoop | Protects electronics on tip-over |
+| `5-lower-skirt-mount.stl` | Lower skirt ring | Clamps garbage-bag skirt to hull base |
+| `6-upper-skirt-mount-complete.stl` | Upper skirt clamp | Seals skirt top to hull |
+| `propeller.stl` | Prop guard / duct | Optional duct for efficiency |
+| `camerabox.stl` | ESP32-CAM enclosure | Front-facing camera housing |
+| `joystick.stl` | Controller shell | Handheld TX enclosure body |
+| `joycover.stl` | Controller cover | TX enclosure top cap |
+
+**Recommended print settings:** PLA/PETG · 20% infill · 0.2 mm layer height · 3 perimeters
 
 ---
 
