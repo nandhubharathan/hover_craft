@@ -1,0 +1,337 @@
+<?xml version="1.0" ?>
+<robot name="hovercraft" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ════════════════════════════════════════════════════════════
+       Hovercraft URDF — Gazebo Digital Twin
+       ════════════════════════════════════════════════════════════
+       Chassis: 22 cm × 14.5 cm × 4 cm   Mass: 400 g
+       Propulsion: 1700KV BLDC + 2-blade prop on servo gimbal
+       Sensors: MPU-6050 IMU, ESP32-Cam (placeholder)
+       Ground: µ = 0.01 (air-cushion approximation)
+  -->
+
+  <!-- ── Materials ─────────────────────────────────────────────── -->
+  <material name="hull_blue">
+    <color rgba="0.15 0.35 0.65 1.0"/>
+  </material>
+  <material name="mount_grey">
+    <color rgba="0.45 0.45 0.45 1.0"/>
+  </material>
+  <material name="prop_orange">
+    <color rgba="0.95 0.55 0.10 1.0"/>
+  </material>
+  <material name="cam_black">
+    <color rgba="0.1 0.1 0.1 1.0"/>
+  </material>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       BASE LINK — Main Chassis
+       ══════════════════════════════════════════════════════════════ -->
+  <link name="base_link">
+    <inertial>
+      <mass value="0.4"/>
+      <origin xyz="0 0 0.02" rpy="0 0 0"/>
+      <!-- Inertia for a 0.22×0.145×0.04 m box at 0.4 kg -->
+      <inertia ixx="0.000755" ixy="0" ixz="0"
+               iyy="0.001653" iyz="0"
+               izz="0.002140"/>
+    </inertial>
+
+    <visual>
+      <origin xyz="0 0 0.02" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.22 0.145 0.04"/>
+      </geometry>
+      <material name="hull_blue"/>
+    </visual>
+
+    <collision>
+      <origin xyz="0 0 0.02" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.22 0.145 0.04"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Gazebo-specific: ultra-low friction to mimic air cushion -->
+  <gazebo reference="base_link">
+    <mu1>0.01</mu1>
+    <mu2>0.01</mu2>
+    <kp>1000000.0</kp>
+    <kd>100.0</kd>
+    <minDepth>0.001</minDepth>
+    <maxVel>1.0</maxVel>
+    <material>Gazebo/Blue</material>
+  </gazebo>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       SKIRT LINK — Hover Skirt (visual only, fixed to chassis)
+       ══════════════════════════════════════════════════════════════ -->
+  <link name="skirt_link">
+    <inertial>
+      <mass value="0.01"/>
+      <origin xyz="0 0 -0.005" rpy="0 0 0"/>
+      <inertia ixx="0.00001" ixy="0" ixz="0"
+               iyy="0.00001" iyz="0"
+               izz="0.00001"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 -0.005" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.23 0.155 0.01"/>
+      </geometry>
+      <material name="mount_grey"/>
+    </visual>
+  </link>
+
+  <joint name="skirt_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="skirt_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       THRUST MOUNT — Servo-Rotated Propulsion Pod
+       ══════════════════════════════════════════════════════════════ -->
+  <link name="thrust_mount">
+    <inertial>
+      <mass value="0.03"/>
+      <origin xyz="-0.03 0 0.035" rpy="0 0 0"/>
+      <inertia ixx="0.000002" ixy="0" ixz="0"
+               iyy="0.000005" iyz="0"
+               izz="0.000005"/>
+    </inertial>
+
+    <visual>
+      <origin xyz="-0.03 0 0.035" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.012" length="0.04"/>
+      </geometry>
+      <material name="mount_grey"/>
+    </visual>
+
+    <collision>
+      <origin xyz="-0.03 0 0.035" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.012" length="0.04"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Servo joint: rotates the thrust mount 0°–180° around Z-axis -->
+  <joint name="servo_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="thrust_mount"/>
+    <origin xyz="-0.08 0 0.02" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="0" upper="3.14159" effort="1.5" velocity="6.28"/>
+    <dynamics damping="0.01" friction="0.005"/>
+  </joint>
+
+  <gazebo reference="thrust_mount">
+    <material>Gazebo/Grey</material>
+  </gazebo>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       PROPELLER — 2-Blade Prop (visual disc + LiftDrag)
+       ══════════════════════════════════════════════════════════════ -->
+  <link name="propeller_link">
+    <inertial>
+      <mass value="0.005"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.0000005" ixy="0" ixz="0"
+               iyy="0.0000005" iyz="0"
+               izz="0.000001"/>
+    </inertial>
+
+    <visual>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry>
+        <cylinder radius="0.038" length="0.003"/>
+      </geometry>
+      <material name="prop_orange"/>
+    </visual>
+
+    <collision>
+      <origin xyz="0 0 0" rpy="0 1.5708 0"/>
+      <geometry>
+        <cylinder radius="0.038" length="0.003"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <!-- Propeller spins freely (continuous) on the thrust mount -->
+  <joint name="prop_joint" type="continuous">
+    <parent link="thrust_mount"/>
+    <child link="propeller_link"/>
+    <origin xyz="-0.03 0 0.06" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <dynamics damping="0.0001"/>
+  </joint>
+
+  <gazebo reference="propeller_link">
+    <material>Gazebo/Orange</material>
+  </gazebo>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       CAMERA MOUNT — ESP32-Cam Placeholder
+       ══════════════════════════════════════════════════════════════ -->
+  <link name="camera_link">
+    <inertial>
+      <mass value="0.01"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.000001" ixy="0" ixz="0"
+               iyy="0.000001" iyz="0"
+               izz="0.000001"/>
+    </inertial>
+
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.027 0.040 0.010"/>
+      </geometry>
+      <material name="cam_black"/>
+    </visual>
+  </link>
+
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <!-- Mounted at the front of the chassis, looking forward -->
+    <origin xyz="0.10 0 0.035" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       IMU LINK — MPU-6050 Sensor Frame
+       ══════════════════════════════════════════════════════════════ -->
+  <link name="imu_link">
+    <inertial>
+      <mass value="0.002"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <inertia ixx="0.0000001" ixy="0" ixz="0"
+               iyy="0.0000001" iyz="0"
+               izz="0.0000001"/>
+    </inertial>
+  </link>
+
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="imu_link"/>
+    <origin xyz="0 0 0.02" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ══════════════════════════════════════════════════════════════
+       GAZEBO PLUGINS
+       ══════════════════════════════════════════════════════════════ -->
+
+  <!-- ── IMU Sensor (replaces MPU-6050) ────────────────────────── -->
+  <gazebo reference="imu_link">
+    <sensor name="imu_sensor" type="imu">
+      <always_on>true</always_on>
+      <update_rate>100</update_rate>
+      <imu>
+        <angular_velocity>
+          <x><noise type="gaussian">
+            <mean>0.0</mean><stddev>0.0002</stddev>
+          </noise></x>
+          <y><noise type="gaussian">
+            <mean>0.0</mean><stddev>0.0002</stddev>
+          </noise></y>
+          <z><noise type="gaussian">
+            <mean>0.0</mean><stddev>0.0002</stddev>
+          </noise></z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x><noise type="gaussian">
+            <mean>0.0</mean><stddev>0.017</stddev>
+          </noise></x>
+          <y><noise type="gaussian">
+            <mean>0.0</mean><stddev>0.017</stddev>
+          </noise></y>
+          <z><noise type="gaussian">
+            <mean>0.0</mean><stddev>0.017</stddev>
+          </noise></z>
+        </linear_acceleration>
+      </imu>
+      <plugin name="imu_plugin" filename="libgazebo_ros_imu_sensor.so">
+        <ros>
+          <namespace>/hovercraft</namespace>
+          <remapping>~/out:=imu</remapping>
+        </ros>
+        <initial_orientation_as_reference>false</initial_orientation_as_reference>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <!-- ── Camera Sensor (replaces ESP32-Cam) ────────────────────── -->
+  <gazebo reference="camera_link">
+    <sensor name="camera_sensor" type="camera">
+      <always_on>true</always_on>
+      <update_rate>15</update_rate>
+      <camera>
+        <horizontal_fov>1.3962634</horizontal_fov>
+        <image>
+          <width>160</width>
+          <height>120</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>8.0</far>
+        </clip>
+      </camera>
+      <plugin name="camera_plugin" filename="libgazebo_ros_camera.so">
+        <ros>
+          <namespace>/hovercraft</namespace>
+          <remapping>~/image_raw:=camera/image_raw</remapping>
+          <remapping>~/camera_info:=camera/camera_info</remapping>
+        </ros>
+        <camera_name>esp32_cam</camera_name>
+        <frame_name>camera_link</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <!-- ── LiftDrag Plugin (models 1700KV 2-blade propulsion) ───── -->
+  <!--
+       CL/CD curves approximated for a 76 mm (3") 2-blade prop
+       at 1700KV on 2S LiPo (~12 600 RPM no-load).
+       a0 = 0.3 rad  (angle of zero lift)
+       cla = 4.75     (lift-curve slope per rad)
+       cda = 0.025    (parasitic drag coeff)
+       area = 0.0045 m²  (swept disc area ≈ π·0.038²)
+       air_density = 1.225 kg/m³
+  -->
+  <gazebo>
+    <plugin name="prop_lift_drag" filename="libLiftDragPlugin.so">
+      <a0>0.3</a0>
+      <cla>4.75</cla>
+      <cda>0.025</cda>
+      <cma>0.0</cma>
+      <alpha_stall>0.35</alpha_stall>
+      <cla_stall>-0.2</cla_stall>
+      <cda_stall>1.0</cda_stall>
+      <cma_stall>0.0</cma_stall>
+      <cp>-0.03 0 0.06</cp>
+      <area>0.0045</area>
+      <air_density>1.225</air_density>
+      <forward>1 0 0</forward>
+      <upward>0 0 1</upward>
+      <link_name>thrust_mount</link_name>
+    </plugin>
+  </gazebo>
+
+  <!-- ── Joint State Publisher (for servo feedback) ────────────── -->
+  <gazebo>
+    <plugin name="joint_state_pub" filename="libgazebo_ros_joint_state_publisher.so">
+      <ros>
+        <namespace>/hovercraft</namespace>
+        <remapping>~/out:=joint_states</remapping>
+      </ros>
+      <update_rate>50</update_rate>
+      <joint_name>servo_joint</joint_name>
+      <joint_name>prop_joint</joint_name>
+    </plugin>
+  </gazebo>
+
+</robot>

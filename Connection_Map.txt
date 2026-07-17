@@ -1,0 +1,156 @@
+═══════════════════════════════════════════════════════════════
+  HOVERCRAFT WIRING — CONNECTION MAP  (v5.5 — Nano RX Bridge)
+  TX Nano ──433MHz──► RX Nano ──UART──► Raspberry Pi Pico
+═══════════════════════════════════════════════════════════════
+
+┌─────────────────────────────────────────────────────────────┐
+│               TRANSMITTER (Arduino Nano — TX)               │
+├──────────┬────────────┬─────────────────────────────────────┤
+│ Pin      │ Type       │ Connection                          │
+├──────────┼────────────┼─────────────────────────────────────┤
+│ A0       │ Analog In  │ Joystick X-axis (Thrust)            │
+│ A1       │ Analog In  │ Joystick Y-axis (Steering)          │
+│ D2       │ Digital In │ AI Mode Toggle Switch (INPUT_PULLUP)│
+│ D3       │ Digital In │ Lift Toggle Push Button (PULLUP)    │
+│ D10      │ Digital Out│ 433 MHz TX PTT Pin (RadioHead)      │
+│ D12      │ Digital Out│ 433 MHz TX Data Pin (RadioHead)     │
+│ 5V       │ Power      │ Joystick VCC + TX Module VCC        │
+│ GND      │ Power      │ Common Ground                       │
+└──────────┴────────────┴─────────────────────────────────────┘
+
+       ┌──────────433 MHz RF Link──────────┐
+       │   TX Nano D12  ───►  RX Nano D12  │
+       │   ASK @ 2000 bps (RadioHead)      │
+       └───────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│           RECEIVER BRIDGE (Arduino Nano — RX)               │
+│   Role: 433 MHz Wireless → Wired UART Bridge to Pico        │
+├──────────┬────────────┬─────────────────────────────────────┤
+│ Pin      │ Type       │ Connection                          │
+├──────────┼────────────┼─────────────────────────────────────┤
+│ D12      │ Digital In │ ← 433 MHz RX Module DATA pin        │
+│ D10      │ Digital Out│ → 433 MHz RX PTT (unused, disabled) │
+│ D11      │ SoftSerial │ → 1kΩ → Pico GP9  (UART1 RX)       │
+│          │   TX       │   (+ 2kΩ to GND voltage divider)   │
+│ 5V       │ Power      │ From BEC (or USB for bench testing) │
+│ GND      │ Power      │ → Pico GND (common ground)         │
+└──────────┴────────────┴─────────────────────────────────────┘
+
+  Nano RX D11 ──[1kΩ]──┬── Pico GP9 (UART1 RX, 3.3V)
+  (5V logic)            │
+                       [2kΩ]
+                        │
+                       GND
+  ⚠  MANDATORY: 5V Nano TX → 3.3V Pico RX level-shift!
+
+  UART Protocol (Nano → Pico, 57600 bps, 8N1):
+  [0xAA][0x55][thrust][steer][lift][ai][brake][checksum]
+   sync0  sync1   1B     1B   1B   1B    1B      XOR
+
+┌─────────────────────────────────────────────────────────────┐
+│                 FLIGHT CONTROLLER (Raspberry Pi Pico)       │
+├──────────┬────────────┬─────────────────────────────────────┤
+│ Pin      │ Type       │ Connection                          │
+├──────────┼────────────┼─────────────────────────────────────┤
+│ GP0      │ UART0 TX   │ → ESP32-Cam GPIO3 RX (reserved)    │
+│ GP1      │ UART0 RX   │ ← ESP32-Cam GPIO1 TX (115200 bps)  │
+│ GP4      │ I2C0 SDA   │ ↔ MPU-6050 SDA (+ 4.7kΩ pull-up)  │
+│ GP5      │ I2C0 SCL   │ ↔ MPU-6050 SCL (+ 4.7kΩ pull-up)  │
+│ GP8      │ UART1 TX   │ → (reserved / unused)              │
+│ GP9      │ UART1 RX   │ ← Nano RX D11 (via 1kΩ/2kΩ divider│
+│          │            │   57600 bps SoftwareSerial)        │
+│ GP16     │ PWM        │ → Lift BLDC ESC Signal              │
+│ GP17     │ PWM        │ → Thrust BLDC ESC Signal            │
+│ GP18     │ PWM        │ → MG90S Rudder Servo Signal         │
+│ 3V3      │ Power      │ MPU-6050 VCC (3.3V ONLY!)           │
+│ VSYS     │ Power      │ From BEC 5V (via LiPo regulator)    │
+│ GND      │ Power      │ Common Ground                       │
+└──────────┴────────────┴─────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════
+  PACKET FORMAT (8 bytes total, Nano→Pico UART frame)
+═══════════════════════════════════════════════════════════════
+
+  Byte  Field       Type      Range     Notes
+  ────  ─────────   ────────  ────────  ──────────────────────
+  [0]   sync0       uint8     0xAA      Frame start marker
+  [1]   sync1       uint8     0x55      Frame start marker
+  [2]   thrust      uint8     0–255     Mapped to ESC 1000–2000µs
+  [3]   steer       int8→u8   ±100      Pico re-interprets as int8
+  [4]   liftToggle  uint8     0 or 1    Lift motor on/off state
+  [5]   aiMode      uint8     0 or 1    Autonomous AI enable
+  [6]   brakeMode   uint8     0 or 1    Joystick pulled back
+  [7]   checksum    uint8     XOR       thrust^steer^lift^ai^brake
+
+  Pico struct.unpack format: '<BbBBBB' (6 payload bytes after sync)
+
+═══════════════════════════════════════════════════════════════
+  SIGNAL CHAIN
+═══════════════════════════════════════════════════════════════
+
+  Joystick/Buttons
+       │
+       ▼
+  TX Nano (ATmega328P)
+  ├── Reads analog joystick (A0/A1), digital switches (D2/D3)
+  ├── Builds 6-byte HoverPacket struct with XOR checksum
+  └── Transmits via RadioHead RH_ASK @ 2000 bps on D12
+       │
+       ▼  [433 MHz OOK/ASK RF — one-way link]
+       │
+  RX Nano (ATmega328P)  ← NEW BRIDGE BOARD
+  ├── RadioHead RH_ASK receives on D12
+  ├── Validates checksum
+  ├── Wraps in 8-byte framed packet [0xAA][0x55][...][csum]
+  └── Forwards via SoftwareSerial on D11 @ 57600 bps
+       │
+       ▼  [Wired UART — 5V→3.3V voltage divider]
+       │
+  Raspberry Pi Pico (RP2040) — GP9 UART1 RX
+  ├── Parses framed packet, validates sync + checksum
+  ├── Core 0: I/O — feeds shared state (joy_x, joy_y, lift, ai, brake)
+  └── Core 1: 100 Hz control loop → MLP → PWM → ESCs + Servo
+
+═══════════════════════════════════════════════════════════════
+  ESP32-CAM (AI-Thinker) — Obstacle + Geometry Sensor
+═══════════════════════════════════════════════════════════════
+
+  GPIO 1  → Pico GP1 (UART0 RX) @ 115200 bps
+  GPIO 13 → HC-SR04 TRIG
+  GPIO 15 ← HC-SR04 ECHO (via 5V→3.3V divider)
+  5V IN   ← BEC 5V
+  GND     → Common GND
+
+  Packet: [0xD4][aspect_x10][bb_height][ultra_dist_cm]  4 bytes
+
+═══════════════════════════════════════════════════════════════
+  POWER WIRING
+═══════════════════════════════════════════════════════════════
+
+  3S LiPo (11.1 V)
+    ├── ESC 1 (Lift BLDC)    → BEC 5V out
+    ├── ESC 2 (Thrust BLDC)
+    └── BEC 5V
+          ├── Pico VSYS
+          ├── Servo VCC
+          ├── ESP32-Cam VCC
+          ├── HC-SR04 VCC
+          └── Nano RX VIN (or USB for bench)
+
+  Pico 3V3 OUT → MPU-6050 VCC
+  TX Nano      → Separate 9V battery or USB (hand controller)
+  433 MHz TX   → TX Nano 5V pin
+  433 MHz RX   → Nano RX 5V pin
+
+═══════════════════════════════════════════════════════════════
+  SAFETY NOTES
+═══════════════════════════════════════════════════════════════
+
+  ⚠  Nano RX D11 is 5V — MUST use 1kΩ/2kΩ divider to Pico GP9
+  ⚠  433 MHz RX module VCC → Nano 5V (NOT Pico 3V3)
+  ⚠  All GNDs connected: Nano RX GND ↔ Pico GND ↔ ESC GND
+  ⚠  Remove propellers for ALL bench testing
+  ⚠  Add hardware kill switch between LiPo and ESCs
+  ⚠  MPU-6050 I2C needs 4.7kΩ pull-up resistors on SDA/SCL
+  ⚠  Do NOT initialise SD card on ESP32-CAM (shares GPIO 13/15)
