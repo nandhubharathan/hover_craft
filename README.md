@@ -106,6 +106,7 @@ ESP32-CAM ──── HC-SR04 Ultrasonic (GPIO 13 TRIG / GPIO 15 ECHO)
 | 5V BEC | 1 | Regulated supply |
 | 1kΩ / 2kΩ Resistors | 2 | 5V→3.3V level shifter |
 | 4.7kΩ Resistors | 2 | I2C SDA/SCL pull-ups |
+| ball bearing 6702 | 1 |15x21x4mm|
 
 ### Hand Controller (Transmitter)
 
